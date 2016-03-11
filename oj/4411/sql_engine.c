@@ -12,6 +12,16 @@ static int repeat = 0;
 static int repeat_del = 0;
 static int row = 0;
 
+table_t head = {{0, }, 0, 0, 0, NULL, NULL, ""};
+
+sql_execute_func_t sql_execute_funcs[] = {
+    sql_execute_create,
+    sql_execute_drop,
+    sql_execute_delete,
+    sql_execute_insert,
+    sql_execute_select
+};
+
 /***********************************设计规则 ***********************************
 1、支持的数据类型：
     integer : 整型，有符号 4 字节整数；
@@ -134,23 +144,38 @@ inline void __sql_free(void **ptr)
 
 void sql_handle_release(sql_handle_t *sh)
 {
+    if (!sh)
+        return;
     __sql_free((void **)&sh->table_name);
-    if (sh->operation == CREATE) {
-        while (sh->col_nums) {
-            __sql_free((void **)&sh->columns[--(sh->col_nums)].name);
-        }
-    } else if (sh->operation == INSERT) {
-        // while (sh->value_nums) {
-        //     __sql__free(&sh->values[--(sh->col_nums)].name);
-        // }
-    } else {
-        while (sh->cond_nums) {
-            __sql_free((void **)&sh->conds[--(sh->cond_nums)].name);
-            //value_t need free
-        }
-    }
-    while (sh->order_nums) {
-        __sql_free((void **)&sh->orders[--(sh->order_nums)]);
+    switch(sh->operation)
+    {
+        case CREATE:
+            while (sh->col_nums) {
+                __sql_free((void **)&sh->columns[--(sh->col_nums)].name);
+            }
+            break;
+        case DROP:
+            break;
+        case SELECT:
+            while (sh->cond_nums) {
+                if (sh->conds[--(sh->cond_nums)].type == TEXT)
+                    __sql_free((void **)&sh->conds[sh->cond_nums].name);
+            }
+            while (sh->order_nums) {
+                __sql_free((void **)&sh->orders[--(sh->order_nums)]);
+            }
+            break;
+        case DELETE:
+            break;
+        case INSERT:
+            while (sh->value_nums) {
+                if (sh->types[--(sh->col_nums)] == TEXT)
+                    __sql_free((void **)&sh->values[sh->col_nums].text);
+            }
+            break;
+        default:
+            printf("Unkown sql operation type\n");
+            exit(-1);
     }
 }
 
@@ -200,8 +225,10 @@ bool sql_parse(const char *sql, sql_handle_t *sh)
         // table_t *pt = get_table_by_name(sh->table_name);
         while (*sql && (__except(&sql, ',') || !__except(&sql, ')'))/* && sh->value_nums < pt->col_nums*/) {
             if (__sql_integer_parse(&sql, &sh->values[sh->value_nums].integer))
-                ;
-            else if (!__sql_text_parse(&sql, &sh->values[sh->value_nums].text))
+                sh->types[sh->value_nums] = INTEGER;
+            else if (__sql_text_parse(&sql, &sh->values[sh->value_nums].text))
+                sh->types[sh->value_nums] = TEXT;
+            else
                 return false;
             sh->value_nums += 1;
         }
@@ -233,8 +260,10 @@ bool sql_parse(const char *sql, sql_handle_t *sh)
         if (!__except(&sql, '='))
             return false;
         if (__sql_integer_parse(&sql, &sh->conds[sh->cond_nums].val.integer))
-            ;
-        else if (!__sql_text_parse(&sql, &sh->conds[sh->cond_nums].val.text))
+            sh->conds[sh->cond_nums].type = INTEGER;
+        else if (__sql_text_parse(&sql, &sh->conds[sh->cond_nums].val.text))
+            sh->conds[sh->cond_nums].type = TEXT;
+        else
             return false;
         sh->cond_nums += 1;
         while (*sql && isspace(*sql))
@@ -259,13 +288,169 @@ bool sql_parse(const char *sql, sql_handle_t *sh)
     return true;
 }
 
+table_t *find_table(const char *name)
+{
+    assert(strlen(name) < TABLE_NAME_LEN);
+    table_t *p = &head;
+    while (p->next) {
+        int x  = strncmp(p->next->name, name, TABLE_NAME_LEN);
+        if (x == 0)
+            return p->next;
+        else if (x > 0)
+            return NULL;
+    }
+    return NULL;
+}
+
+table_t *lower_bound(const char *name)
+{
+    assert(strlen(name) < TABLE_NAME_LEN);
+    table_t *p = &head;
+    while (p->next)
+        if (0 <= strncmp(p->next->name, name, TABLE_NAME_LEN))
+            break;
+    return p;
+}
+
+inline void insert(table_t *prev, table_t *n)
+{
+    n->next = prev->next;
+    prev->next = n;
+}
+
+void table_release(table_t **t)
+{
+    table_t *p = *t;
+    int i, j;
+    for (i = 0; i < p->row_nums; ++i) {
+        for (j = 0; j < p->col_nums; ++j) {
+            if (p->columns[i].type == TEXT)
+                __sql_free((void **)&p->records[i*p->col_nums + j].text);
+        }
+    }
+    for (i = 0; i < p->col_nums; ++i) {
+        __sql_free((void **)&p->columns[i].name);
+    }
+    __sql_free((void **)&p->records);
+    __sql_free((void **)t);
+}
+
+RecordSet sql_execute_create(const sql_handle_t *sh)
+{
+    assert(sh->operation == CREATE);
+    table_t *p = find_table(sh->table_name);
+    if (p || sh->col_nums > TABLE_MAX_COL) {
+        RecordSet fmsg = (RecordSet)malloc(sizeof(struct db_record_set));
+        strcpy(fmsg->result, CREATE_TABLE_CLAUSE " " FMSG);
+        fmsg->next = NULL;
+        return fmsg;
+    }
+    table_t *prev = lower_bound(sh->table_name);
+    table_t *n = calloc(1, sizeof(table_t));
+    int i;
+    for (i = 0; i < sh->col_nums; ++i) {
+        n->columns[i].type = sh->columns[i].type;
+        n->columns[i].name = strdup(sh->columns[i].name);
+    }
+    n->col_nums = sh->col_nums;
+    strncpy(n->name, sh->table_name, TABLE_NAME_LEN);
+    insert(prev, n);
+
+    RecordSet smsg = (RecordSet)malloc(sizeof(struct db_record_set));
+    strcpy(smsg->result, CREATE_TABLE_CLAUSE " " SMSG);
+    smsg->next = NULL;
+    return smsg;
+}
+
+RecordSet sql_execute_drop(const sql_handle_t *sh)
+{
+    assert(sh->operation == DROP);
+    table_t *p = find_table(sh->table_name);
+    if (!p) {
+        RecordSet fmsg = (RecordSet)malloc(sizeof(struct db_record_set));
+        strcpy(fmsg->result, DROP_TABLE_CLAUSE " " FMSG);
+        fmsg->next = NULL;
+        return fmsg;
+    }
+    table_t *prev = lower_bound(sh->table_name);
+    table_t *d = prev->next;
+    prev->next = d->next;
+    table_release(&d);
+
+    RecordSet smsg = (RecordSet)malloc(sizeof(struct db_record_set));
+    strcpy(smsg->result, DROP_TABLE_CLAUSE " " SMSG);
+    smsg->next = NULL;
+    return smsg;
+}
+
+RecordSet sql_execute_delete(const sql_handle_t *sh)
+{
+    assert(sh->operation == DELETE);
+    return NULL;
+}
+RecordSet sql_execute_insert(const sql_handle_t *sh)
+{
+    assert(sh->operation == INSERT);
+    table_t *p = find_table(sh->table_name);
+    RecordSet fmsg = (RecordSet)malloc(sizeof(struct db_record_set));
+    strcpy(fmsg->result, INSERT_INTO_CLAUSE " " FMSG);
+    fmsg->next = NULL;
+    if (!p || p->col_nums != sh->col_nums)
+        return fmsg;
+    int i;
+    for (i = 0; i < p->col_nums; ++i)
+        if (p->columns[i].type != sh->types[i])
+            return fmsg;
+    if (p->row_nums == p->row_cap) {
+        p->row_cap += p->row_cap / 2 + 1;
+        p->records = (value_t *)realloc(p->records, sizeof(value_t)*p->row_cap*p->col_nums);
+    }
+    if (!p->records)
+        return fmsg;
+    for (i = 0; i < p->col_nums; ++i) {
+        if (p->columns[i].type == TEXT)
+            p->records[p->row_nums*p->col_nums + i].text = strdup(sh->values[i].text);
+        else
+            p->records[p->row_nums*p->col_nums + i].integer = sh->values[i].integer;
+    }
+    p->row_nums += 1;
+    free(fmsg);
+
+    RecordSet smsg = (RecordSet)malloc(sizeof(struct db_record_set));
+    strcpy(smsg->result, INSERT_INTO_CLAUSE " " SMSG);
+    smsg->next = NULL;
+    return smsg;
+}
+RecordSet sql_execute_select(const sql_handle_t *sh)
+{
+    assert(sh->operation == SELECT);
+
+    RecordSet fmsg = (RecordSet)malloc(sizeof(struct db_record_set));
+    strcpy(fmsg->result, INSERT_INTO_CLAUSE " " FMSG);
+    fmsg->next = NULL;
+
+    table_t *p = find_table(sh->table_name);
+    if (!p)
+        return fmsg;
+    struct db_record_set dummy = {"", NULL}, *pos = &dummy;
+    return NULL;
+}
+
 RecordSet sql_execute(const char *sql)
 {
     sql_handle_t sh;
-    if (!sql_parse(sql, &sh))
-        return NULL;
-    return NULL;
+    memset(&sh, 0, sizeof(sh));
+    if (!sql_parse(sql, &sh)) {
+        RecordSet emsg = (RecordSet)malloc(sizeof(struct db_record_set));
+        strcpy(emsg->result, "Syntax error!");
+        emsg->next = NULL;
+        return emsg;
+    }
+    RecordSet res = sql_execute_funcs[sh.operation](&sh);
+    sql_handle_release(&sh);
+    return res;
 }
+
 
 
 /*****************************************
@@ -370,7 +555,17 @@ char *sql_handle_to_string(const sql_handle_t *sh)
         case SELECT:
             cur += snprintf(buf+cur, size-cur, "conditions: %d\n", sh->cond_nums);
             for (i = 0; i < sh->cond_nums; ++i) {
-                cur += snprintf(buf+cur, size-cur, "\t%s %d\n", sh->conds[i].name, sh->conds[i].val.integer);
+                switch (sh->conds[i].type) {
+                    case INTEGER:
+                        cur += snprintf(buf+cur, size-cur, "\t%s %d\n", sh->conds[i].name, sh->conds[i].val.integer);
+                        break;
+                    case TEXT:
+                        cur += snprintf(buf+cur, size-cur, "\t%s %s\n", sh->conds[i].name, sh->conds[i].val.text);
+                        break;
+                    default:
+                        printf("Unknown condition value type\n");
+                        exit(-1);
+                }
                 assert(cur < size);
             }
             cur += snprintf(buf+cur, size-cur, "orders: %d\n", sh->order_nums);
@@ -384,7 +579,17 @@ char *sql_handle_to_string(const sql_handle_t *sh)
         case INSERT:
             cur += snprintf(buf+cur, size-cur, "values: %d\n", sh->value_nums);
             for (i = 0; i < sh->value_nums; ++i) {
-                cur += snprintf(buf+cur, size-cur, "\t%d\n", sh->values[i].integer);
+                switch (sh->types[i]) {
+                    case INTEGER:
+                        cur += snprintf(buf+cur, size-cur, "\t%d\n", sh->values[i].integer);
+                        break;
+                    case TEXT:
+                        cur += snprintf(buf+cur, size-cur, "\t%s\n", sh->values[i].text);
+                        break;
+                    default:
+                        printf("Unknown value type\n");
+                        exit(-1);
+                }
                 assert(cur < size);
             }
             break;
@@ -400,33 +605,29 @@ int main(void)
     sql_handle_t sh;
     memset(&sh, 0, sizeof(sh));
     int i;
+    char *sqls[] = {
+        "CREATE TABLE table_name ( id1 integer, id2 integer, id3 integer, id4 integer, id5 integer, name text );",
+        "CREATE TABLE table_name ( id1 integer, id2 integer, id3 integer, name text );",
+        "INSERT INTO table_name VALUES (100, 'Bananas');",
+        "INSERT INTO table_name VALUES (100, 20, 3, 'Bananas');",
+        "DROP TABLE table_name;",
+        "SELECT * FROM table_name WHERE col2_name = 'Bananas' ORDER BY col1_name;"
+    };
+    for (i = 0; i < sizeof(sqls)/sizeof(sqls[0]); ++i) {
+        if (sql_parse(sqls[i], &sh)) {
+            char *buf = sql_handle_to_string(&sh);
+            puts(buf);
+            free(buf);
+        } else
+            puts("failed");
+    }
 
-    if (sql_parse("CREATE TABLE table_name ( id1 integer, id2 integer, id3 integer, id4 integer, id5 integer, name text );", &sh)) {
-        char *buf = sql_handle_to_string(&sh);
-        puts(buf);
-        free(buf);
-    } else
-        puts("failed");
-
-    if (sql_parse("DROP TABLE table_name;", &sh)) {
-        char *buf = sql_handle_to_string(&sh);
-        puts(buf);
-        free(buf);
-    } else
-        puts("failed");
-
-    if (sql_parse("INSERT INTO table_name VALUES (100, 'Bananas');", &sh)) {
-        char *buf = sql_handle_to_string(&sh);
-        puts(buf);
-        free(buf);
-    } else
-        puts("failed");
-
-    if (sql_parse("SELECT * FROM table_name WHERE col2_name = 'Bananas' ORDER BY col1_name;", &sh)) {
-        char *buf = sql_handle_to_string(&sh);
-        puts(buf);
-        free(buf);
-    } else
-        puts("failed");
+    for (i = 0; i < sizeof(sqls)/sizeof(sqls[0]); ++i) {
+        RecordSet res = sql_execute(sqls[i]);
+        if (res)
+            puts(res->result);
+        else
+            puts("xxxx");
+    }
     return 0;
 }

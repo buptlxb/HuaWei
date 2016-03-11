@@ -40,6 +40,10 @@ typedef int Oid;
 #define WHERE_CLAUSE "WHERE"
 #define ORDER_BY_CLAUSE "ORDER BY"
 
+#define SMSG "SUCCESS"
+#define FMSG "FAILED"
+
+
 enum type_t {INTEGER, TEXT};
 enum op_t {CREATE, DROP, DELETE, INSERT, SELECT};
 
@@ -57,13 +61,15 @@ typedef struct table_t {
     column_t columns[TABLE_MAX_COL];
     unsigned int col_nums;
     unsigned int row_nums;
-    value_t **table;
+    unsigned int row_cap;
+    value_t *records;
     struct table_t *next;
     char name[TABLE_NAME_LEN];
 } table_t;
 
 typedef struct condition_t {
     char *name;
+    enum type_t type;
     value_t val;
 } condition_t;
 
@@ -77,7 +83,10 @@ typedef struct sql_handle_t {
     };
     union {
         column_t columns[TABLE_MAX_COL];
-        value_t values[TABLE_MAX_COL];
+        struct {
+            value_t values[TABLE_MAX_COL];
+            enum type_t types[TABLE_MAX_COL];
+        };
         condition_t conds[WHERE_MAX_COND];
     };
     unsigned int order_nums;
@@ -193,4 +202,11 @@ char* record_to_string(const Record rcd);
 ******************************************************************************/
 void rm_recordset(RecordSet* rs);
 
+RecordSet sql_execute_create(const sql_handle_t *sh);
+RecordSet sql_execute_drop(const sql_handle_t *sh);
+RecordSet sql_execute_delete(const sql_handle_t *sh);
+RecordSet sql_execute_insert(const sql_handle_t *sh);
+RecordSet sql_execute_select(const sql_handle_t *sh);
+
+typedef RecordSet (*sql_execute_func_t)(const sql_handle_t *);
 #endif
