@@ -43,8 +43,9 @@ typedef int Oid;
 #define SMSG "SUCCESS"
 #define FMSG "FAILED"
 
+#define MAGIC_STR "$$#*77388377*#$$"
 
-enum type_t {INTEGER, TEXT};
+enum type_t {INTEGER, TEXT, INVALID_TYPE};
 enum op_t {CREATE, DROP, DELETE, INSERT, SELECT};
 
 typedef union value_t {
