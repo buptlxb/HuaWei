@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdbool.h>
+#include <math.h>
 
 typedef struct {
     int numerator;
@@ -64,9 +65,18 @@ void swap(fraction_ptr_t a, fraction_ptr_t b)
     *b = tmp;
 }
 
-bool dfs(fraction_t fps[], int len) {
+bool dfs(fraction_t fps[], int len, double *res) {
     if (len == 1) {
-        return fps->numerator == fps->denominator * 24 && fps->denominator;
+        if (fps->numerator == fps->denominator * 24 && fps->denominator) {
+            *res = 24.0;
+            return true;
+        }
+        if (fps->denominator) {
+            double tmp = 1.0 * fps->numerator / fps->denominator;
+            if (fabs(tmp-24.0) < fabs(*res-24.0))
+                *res = tmp;
+        }
+        return false;
     }
     int i, j, k;
     for (i = 1; i < len; ++i) {
@@ -75,7 +85,7 @@ bool dfs(fraction_t fps[], int len) {
             swap(fps, fps+j);
             for (k = 0; k < sizeof(fraction_ops)/sizeof(fraction_op_t); ++k) {
                 fraction_ops[k](&save, fps, fps+i);
-                if (dfs(fps+1, len-1))
+                if (dfs(fps+1, len-1, res))
                     return true;
             }
             swap(fps, fps+j);
@@ -85,19 +95,35 @@ bool dfs(fraction_t fps[], int len) {
     return false;
 }
 
-bool Game24Points(int a, int b, int c, int d)
+double Game24Points(int a, int b, int c, int d)
 {
     fraction_t fractions[4];
     init_fraction(fractions + 0, a, 1);
     init_fraction(fractions + 1, b, 1);
     init_fraction(fractions + 2, c, 1);
     init_fraction(fractions + 3, d, 1);
-    return dfs(fractions, 4);
+    double ret = 100000;
+    dfs(fractions, 4, &ret);
+    return ret;
+}
+
+double Game24PointsEx(char *str)
+{
+    int a, b, c, d;
+    sscanf(str, "%d %d %d %d", &a, &b, &c, &d);
+    return Game24Points(a, b, c, d);
 }
 
 int main(void)
 {
-    printf("%d\n", Game24Points(7, 2, 1, 10));
-    printf("%d\n", Game24Points(7, 2, 2, 10));
+    printf("%f\n", Game24Points(7, 2, 1, 10));
+    printf("%f\n", Game24Points(7, 2, 2, 10));
+    printf("%f\n\n", Game24PointsEx("7  2 2 10"));
+
+    printf("%f\n", Game24PointsEx("1 5 5 5"));
+    printf("%f\n", Game24PointsEx("1 7 6 7"));
+    printf("%f\n", Game24PointsEx("3 3 8 8"));
+    printf("%f\n", Game24PointsEx("9 9 7 5"));
+    printf("%f\n", Game24PointsEx("1 9 1 7"));
     return 0;
 }
